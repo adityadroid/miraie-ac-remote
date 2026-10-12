@@ -28,8 +28,22 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 Open the app once to sign in. Then edit Quick Settings and add the **AC** tile:
 tap it to toggle power, long-press it to open the control panel.
 
+Debug builds can show the panel with sample data, without an account:
+`adb shell am start -n dev.adityadroid.acremote/.MainActivity --ez demo true`.
+
+## Features
+
+Power, set temperature (16–30 °C), mode, fan speed, vertical airflow, Eco, Powerful,
+Convertible (110 % HC down to 40 %), and on/off timers that run on the AC itself.
+
 ## Known gaps
 
 - Sleep mode has no known MirAIe key, so the fourth tile is **Powerful**. Run `miraie-probe status`
   while sleep is on in the MirAIe app to find the key.
-- The Android app bundles Nunito (SIL Open Font License); the licence text still needs adding.
+- Repeating weekly schedules from the MirAIe app use an undocumented cloud API and aren't supported.
+
+## Credits
+
+Not affiliated with Panasonic. Protocol details come from the community projects
+`rkzofficial/miraie-ac`, `miraie-ac-in` and the Raycast MirAIe extension.
+The Android app bundles Nunito under the SIL Open Font License (`android/third_party/nunito/OFL.txt`).
