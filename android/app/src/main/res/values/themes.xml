@@ -1,0 +1,21 @@
+<resources>
+    <color name="bg">#FF0E0E0E</color>
+    <color name="launcher_bg">#FF151412</color>
+
+    <style name="Theme.AcRemote" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+    </style>
+
+    <!-- Translucent, dialog-like panel: the window is see-through and Compose draws a light scrim. -->
+    <style name="Theme.AcRemote.Panel">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowAnimationStyle">@android:style/Animation.Translucent</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
