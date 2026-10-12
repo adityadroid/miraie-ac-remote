@@ -14,6 +14,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken
 import org.eclipse.paho.client.mqttv3.MqttCallback
 import org.eclipse.paho.client.mqttv3.MqttClient
@@ -85,9 +86,11 @@ object AcRepository {
 
     // ------------------------------------------------------------------ auth
 
-    suspend fun login(username: String, password: String): Boolean {
+    // Callers include the UI's main-thread scope; the REST and MQTT calls below block, and Android
+    // throws NetworkOnMainThreadException (with no message) if they run there.
+    suspend fun login(username: String, password: String): Boolean = withContext(Dispatchers.IO) {
         _state.update { it.copy(loggingIn = true, loginError = null) }
-        return try {
+        try {
             val s = MiraieApi.login(username, password)
             store.saveCredentials(username.trim(), password)
             store.saveSession(s)
@@ -99,6 +102,7 @@ object AcRepository {
             if (liveUsers > 0) connectMqtt()
             true
         } catch (e: Exception) {
+            Log.w(TAG, "Login failed", e)
             _state.update { it.copy(loggingIn = false, loginError = friendly(e)) }
             false
         }
@@ -383,6 +387,6 @@ object AcRepository {
             MqttException.REASON_CODE_FAILED_AUTHENTICATION.toInt() -> "MQTT not authorized"
             else -> "Can't reach the AC service"
         }
-        else -> e.message ?: "Something went wrong"
+        else -> e.message ?: "Something went wrong (${e.javaClass.simpleName})"
     }
 }
