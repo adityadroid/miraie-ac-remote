@@ -31,7 +31,8 @@ final class ACStore: ObservableObject {
     static func demo() -> ACStore {
         let store = ACStore(loadSaved: false)
         store.state.merge(["onlineStatus": "true", "ps": "on", "acmd": "cool", "actmp": "23",
-                           "rmtmp": "26.5", "acfs": "auto", "acvs": 0, "acem": "off", "acpm": "off"])
+                           "rmtmp": "26.5", "acfs": "auto", "acvs": 0, "acem": "off", "acpm": "off",
+                           "cnv": 80, "actm": [Int(Date().timeIntervalSince1970) + 7200, -1]])
         store.phase = .connected
         store.deviceName = "Bedroom AC"
         return store
@@ -196,13 +197,35 @@ final class ACStore: ObservableObject {
 
     func setEco(_ on: Bool) {
         state.eco = on
-        if on { state.powerful = false }
+        if on { state.powerful = false; resetConverti() }
         send(.eco(on))
     }
 
     func setPowerful(_ on: Bool) {
         state.powerful = on
-        if on { state.eco = false }
+        if on { state.eco = false; resetConverti() }
         send(.powerful(on))
+    }
+
+    func setConverti(_ c: Converti) {
+        state.converti = c
+        state.eco = false
+        state.powerful = false
+        send(.converti(c))
+    }
+
+    private func resetConverti() {
+        if state.converti != nil { state.converti = .off }
+    }
+
+    /// Pass nil to clear. The AC keeps both slots, so the other one is resent unchanged.
+    func setOffTimer(_ date: Date?) {
+        state.offTimer = date.map { Int($0.timeIntervalSince1970) } ?? -1
+        send(.timers(off: state.offTimer, on: state.onAt() == nil ? -1 : state.onTimer))
+    }
+
+    func setOnTimer(_ date: Date?) {
+        state.onTimer = date.map { Int($0.timeIntervalSince1970) } ?? -1
+        send(.timers(off: state.offAt() == nil ? -1 : state.offTimer, on: state.onTimer))
     }
 }

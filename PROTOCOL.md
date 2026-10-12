@@ -54,6 +54,8 @@ Topics per device: `<base>/control` (publish), `<base>/status` and
 | `acec`   | clean                        | `"on"` / `"off"`                               |
 | `acng`   | nanoe                        | `"on"` / `"off"` (not on all models)           |
 | `acdc`   | indoor display               | `"on"` / `"off"`                               |
+| `cnv`    | convertible (capacity %)     | `110` `100` `90` `80` `70` `55` `40`; `0` off; `1` model doesn't support it |
+| `actm`   | device timers                | `[offAt, onAt]` Unix seconds; `-1` = not set   |
 
 **`rmtmp` quirk:** valid values have a fractional part of `.0` or `.5`. Some firmware
 sends e.g. `150.27`; when the fraction is anything else, the room temperature is
@@ -86,5 +88,20 @@ Control message (QoS 0) on `<base>/control`, base fields plus one or more settin
 | eco off         | `"acem": "off"`                                     |
 | powerful on     | `"acpm": "on", "acem": "off"`                       |
 | powerful off    | `"acpm": "off"`                                     |
+| convertible     | `"cnv": 80, "acem": "off", "acpm": "off"` (number)  |
+| timers          | `"actm": [offAt, onAt]` (both numbers, send both)   |
 
-Sleep mode has no known key yet. Capture a live status payload to find it.
+**Convertible** caps the compressor at a share of rated capacity (110 % "HC" is the
+high-capacity boost, 40 % the most frugal). `cnv` is `0` when off. Eco and powerful are
+mutually exclusive with it, so turning one of those on resets `cnv` to `0` and vice versa.
+When status reports `cnv: 1` (or omits it) the model has no convertible support; hide the control.
+
+**Timers** run on the AC itself, so they fire with every client closed. Each slot holds the
+Unix time (seconds) when the AC switches off / on, or `-1` when unset. Always send the full
+pair: to set the off timer, keep the current on timer in slot 1. Treat a time already in the
+past as unset when displaying it.
+Source: the Raycast MirAIe extension (`buildTimerPayload`).
+
+Recurring weekly schedules from the MirAIe app are stored in MirAIe's cloud through an
+undocumented REST API and are not covered here. Sleep mode also has no known key yet.
+Capture a live status payload or the MirAIe app's traffic to find both.

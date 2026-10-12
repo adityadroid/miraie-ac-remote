@@ -28,6 +28,21 @@ public enum Swing: Int, CaseIterable, Sendable {
     public var shortLabel: String { self == .swing ? "Swing" : "\(rawValue)" }
 }
 
+/// Convertible capacity cap. `off` is 0 on the wire.
+public enum Converti: Int, CaseIterable, Sendable {
+    case off = 0, c110 = 110, c100 = 100, c90 = 90, c80 = 80, c70 = 70, c55 = 55, c40 = 40
+
+    public var label: String {
+        switch self {
+        case .off: "Off"
+        case .c110: "110% · HC"
+        default: "\(rawValue)%"
+        }
+    }
+
+    public var shortLabel: String { self == .off ? "Off" : "\(rawValue)%" }
+}
+
 public struct ACState: Equatable, Sendable {
     public var online = false
     public var power = false
@@ -38,8 +53,23 @@ public struct ACState: Equatable, Sendable {
     public var vSwing = Swing.swing
     public var eco = false
     public var powerful = false
+    /// nil when the model has no convertible support.
+    public var converti: Converti?
+    /// Raw `actm` slots in Unix seconds, -1 when unset.
+    public var offTimer = -1
+    public var onTimer = -1
 
     public init() {}
+
+    /// Pending timer times; ones already in the past count as unset.
+    public func offAt(now: Date = Date()) -> Date? { Self.timerDate(offTimer, now: now) }
+    public func onAt(now: Date = Date()) -> Date? { Self.timerDate(onTimer, now: now) }
+
+    static func timerDate(_ seconds: Int, now: Date) -> Date? {
+        guard seconds > 0 else { return nil }
+        let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+        return date > now ? date : nil
+    }
 
     public static let minTemp = 16
     public static let maxTemp = 30
@@ -55,6 +85,13 @@ public struct ACState: Equatable, Sendable {
         if let v = s["acvs"], let n = Int(Self.string(v)), let w = Swing(rawValue: n) { vSwing = w }
         if let v = s["acem"] { eco = Self.string(v) == "on" }
         if let v = s["acpm"] { powerful = Self.string(v) == "on" }
+        if let v = s["cnv"], let n = Int(Self.string(v)) {
+            converti = Converti(rawValue: n) // 1 ("not supported") and unknown values → nil
+        }
+        if let slots = s["actm"] as? [Any], slots.count >= 2 {
+            offTimer = Int(Self.string(slots[0])) ?? -1
+            onTimer = Int(Self.string(slots[1])) ?? -1
+        }
     }
 
     /// Room temperature is reported in 0.5° steps. Some firmware prefixes junk,
@@ -87,10 +124,17 @@ public struct ACCommand: Sendable {
     public static func fan(_ f: FanSpeed) -> ACCommand { .init(fields: ["acfs": f.rawValue]) }
     public static func vSwing(_ s: Swing) -> ACCommand { .init(fields: ["acvs": s.rawValue]) }
     public static func eco(_ on: Bool) -> ACCommand {
-        .init(fields: on ? ["acem": "on", "acpm": "off"] : ["acem": "off"])
+        .init(fields: on ? ["acem": "on", "acpm": "off", "cnv": 0] : ["acem": "off"])
     }
     public static func powerful(_ on: Bool) -> ACCommand {
-        .init(fields: on ? ["acpm": "on", "acem": "off"] : ["acpm": "off"])
+        .init(fields: on ? ["acpm": "on", "acem": "off", "cnv": 0] : ["acpm": "off"])
+    }
+    public static func converti(_ c: Converti) -> ACCommand {
+        .init(fields: ["cnv": c.rawValue, "acem": "off", "acpm": "off"])
+    }
+    /// Both slots always go out together; pass -1 to clear one.
+    public static func timers(off: Int, on: Int) -> ACCommand {
+        .init(fields: ["actm": [off, on]])
     }
 
     public func payload() -> Data {
@@ -98,6 +142,12 @@ public struct ACCommand: Sendable {
         for (k, v) in fields { body[k] = v }
         return try! JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
     }
+}
+
+/// Next occurrence of a wall-clock time: today if still ahead, otherwise tomorrow.
+public func nextOccurrence(hour: Int, minute: Int, after now: Date = Date(), calendar: Calendar = .current) -> Date {
+    let today = calendar.date(bySettingHour: hour, minute: minute, second: 0, of: now)!
+    return today > now ? today : calendar.date(byAdding: .day, value: 1, to: today)!
 }
 
 /// Normalise what the user typed: emails pass through; phone numbers become the bare +91… form

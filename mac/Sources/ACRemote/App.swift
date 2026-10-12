@@ -8,7 +8,7 @@ struct Launcher {
         // `ACRemote --snapshot out.png` renders the panel with sample data and exits.
         let args = CommandLine.arguments
         if let i = args.firstIndex(of: "--snapshot"), i + 1 < args.count {
-            Snapshot.render(to: URL(fileURLWithPath: args[i + 1]), login: args.contains("--login"))
+            Snapshot.render(to: URL(fileURLWithPath: args[i + 1]), login: args.contains("--login"), timer: args.contains("--timer"))
             return
         }
         ACRemoteApp.main()
@@ -17,10 +17,10 @@ struct Launcher {
 
 @MainActor
 enum Snapshot {
-    static func render(to url: URL, login: Bool) {
+    static func render(to url: URL, login: Bool, timer: Bool) {
         let store = ACStore.demo()
         let view = Group {
-            if login { LoginView() } else { ControlPanel() }
+            if login { LoginView() } else if timer { TimerEditor() } else { ControlPanel() }
         }
         .environmentObject(store)
         .environment(\.colorScheme, .dark)

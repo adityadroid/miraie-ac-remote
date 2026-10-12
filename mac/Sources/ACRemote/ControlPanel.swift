@@ -4,6 +4,7 @@ import MirAIe
 struct ControlPanel: View {
     @EnvironmentObject var store: ACStore
     @State private var showSettings = false
+    @State private var showTimer = false
 
     private var s: ACState { store.state }
 
@@ -15,7 +16,10 @@ struct ControlPanel: View {
             temperatureRow
             TempSlider(value: s.setTemp) { store.setTemperature($0) }
                 .opacity(s.power ? 1 : 0.45)
-            tiles
+            VStack(spacing: 8) {
+                tiles
+                secondRow
+            }
             footer
         }
         .padding(18)
@@ -90,6 +94,33 @@ struct ControlPanel: View {
                 }
             }
         }
+    }
+
+    private var secondRow: some View {
+        HStack(spacing: 8) {
+            if let converti = s.converti {
+                MenuTile(icon: "gauge.with.dots.needle.67percent", title: "Convertible", value: converti.label) {
+                    ForEach(Converti.allCases, id: \.self) { c in
+                        Button(c.label) { store.setConverti(c) }
+                    }
+                }
+            }
+            Button { showTimer.toggle() } label: {
+                TileLabel(icon: "clock", title: "Timer", value: timerSummary) {
+                    Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold))
+                }
+            }
+            .buttonStyle(.plain)
+            .popover(isPresented: $showTimer, arrowEdge: .bottom) {
+                TimerEditor().environmentObject(store).preferredColorScheme(.dark)
+            }
+        }
+    }
+
+    private var timerSummary: String {
+        let off = s.offAt().map { "Off \($0.formatted(date: .omitted, time: .shortened))" }
+        let on = s.onAt().map { "On \($0.formatted(date: .omitted, time: .shortened))" }
+        return [off, on].compactMap { $0 }.joined(separator: " · ").nilIfEmpty ?? "None"
     }
 
     private var footer: some View {

@@ -49,6 +49,42 @@ check(state.setTemp == 25 && state.fan == .high && state.power, "partial merge k
 state.merge(["acmd": "bogus"])
 check(state.mode == .cool, "unknown mode ignored")
 
+// Convertible
+var conv = ACState()
+check(conv.converti == nil, "convertible unknown until reported")
+conv.merge(["cnv": 80])
+check(conv.converti == .c80, "cnv 80 parses")
+conv.merge(["cnv": 0])
+check(conv.converti == .off, "cnv 0 is off")
+conv.merge(["cnv": 1])
+check(conv.converti == nil, "cnv 1 means unsupported")
+let cnvPayload = json(ACCommand.converti(.c55).payload())
+check(cnvPayload["cnv"] as? Int == 55 && cnvPayload["acem"] as? String == "off" && cnvPayload["acpm"] as? String == "off",
+      "converti payload clears eco and powerful")
+check(json(ACCommand.eco(true).payload())["cnv"] as? Int == 0, "eco on resets cnv")
+check(json(ACCommand.powerful(true).payload())["cnv"] as? Int == 0, "powerful on resets cnv")
+check(json(ACCommand.eco(false).payload())["cnv"] == nil, "eco off leaves cnv alone")
+
+// Timers
+let now = Date(timeIntervalSince1970: 1_800_000_000)
+var timers = ACState()
+timers.merge(["actm": [1_800_003_600, -1]])
+check(timers.offAt(now: now) == Date(timeIntervalSince1970: 1_800_003_600), "future off timer kept")
+check(timers.onAt(now: now) == nil, "-1 on timer is unset")
+timers.merge(["actm": [1_799_990_000, 1_800_007_200]])
+check(timers.offAt(now: now) == nil, "past off timer counts as unset")
+check(timers.onAt(now: now) != nil, "on timer parsed")
+check(json(ACCommand.timers(off: 1_800_003_600, on: -1).payload())["actm"] as? [Int] == [1_800_003_600, -1],
+      "timer payload sends both slots")
+
+var cal = Calendar(identifier: .gregorian)
+cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
+let tenPM = cal.date(from: DateComponents(year: 2026, month: 10, day: 12, hour: 22))!
+let later = nextOccurrence(hour: 23, minute: 30, after: tenPM, calendar: cal)
+check(cal.component(.day, from: later) == 12 && cal.component(.hour, from: later) == 23, "23:30 at 22:00 is today")
+let morning = nextOccurrence(hour: 7, minute: 0, after: tenPM, calendar: cal)
+check(cal.component(.day, from: morning) == 13 && cal.component(.hour, from: morning) == 7, "07:00 at 22:00 is tomorrow")
+
 // MQTT framing
 check(MQTTClient.remainingLength(0) == Data([0]), "varint 0")
 check(MQTTClient.remainingLength(127) == Data([0x7F]), "varint 127")
