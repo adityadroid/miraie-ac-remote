@@ -59,11 +59,15 @@ object Protocol {
      */
     fun normalizeUsername(raw: String): String {
         val s = raw.trim()
-        if (s.contains("@") || s.startsWith("+")) return s
-        val digits = s.filter { !it.isWhitespace() && it != '-' }
+        if (s.contains("@")) return s
+        // Phone keyboards insert spaces, dashes and brackets; MirAIe only matches the bare +91… form.
+        val plus = s.startsWith("+")
+        val digits = s.filter(Char::isDigit)
         return when {
-            digits.length == 10 && digits.all(Char::isDigit) -> "+91$digits"
-            digits.length == 12 && digits.startsWith("91") && digits.all(Char::isDigit) -> "+$digits"
+            plus -> "+$digits"
+            digits.length == 10 -> "+91$digits"
+            digits.length == 11 && digits.startsWith("0") -> "+91${digits.drop(1)}"
+            digits.length == 12 && digits.startsWith("91") -> "+$digits"
             else -> s
         }
     }

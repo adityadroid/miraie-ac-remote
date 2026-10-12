@@ -375,7 +375,7 @@ object AcRepository {
     }
 
     private fun friendly(e: Throwable): String = when (e) {
-        is HttpException -> if (e.code == 400 || e.code == 401 || e.code == 403) e.message ?: "Not authorized" else "Server error (${e.code})"
+        is HttpException -> if (e.message.isNullOrBlank() || e.message == "HTTP ${e.code}") "Server error (${e.code})" else "${e.message} (${e.code})"
         is java.net.UnknownHostException -> "No internet connection"
         is java.net.SocketTimeoutException -> "Connection timed out"
         is MqttException -> when (e.reasonCode) {

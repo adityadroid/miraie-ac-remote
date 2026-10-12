@@ -34,7 +34,11 @@ object MiraieApi {
             val code = conn.responseCode
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
-            if (code !in 200..299) throw HttpException(code, "HTTP $code")
+            if (code !in 200..299) {
+                // MirAIe explains rejections in {"message": "..."}; surface it instead of a bare code.
+                val serverMessage = runCatching { JSONObject(text).optString("message") }.getOrNull()
+                throw HttpException(code, serverMessage?.takeIf { it.isNotBlank() } ?: "HTTP $code")
+            }
             return text
         } finally {
             conn.disconnect()
@@ -42,12 +46,7 @@ object MiraieApi {
     }
 
     fun login(username: String, password: String): Session {
-        val text = try {
-            request(Protocol.LOGIN_URL, "POST", null, Protocol.loginBody(username, password))
-        } catch (e: HttpException) {
-            if (e.code == 400 || e.code == 401 || e.code == 403) throw HttpException(e.code, "Wrong username or password")
-            throw e
-        }
+        val text = request(Protocol.LOGIN_URL, "POST", null, Protocol.loginBody(username, password))
         val o = JSONObject(text)
         val token = o.optString("accessToken").takeIf { it.isNotEmpty() }
             ?: throw IOException("Login response had no access token")

@@ -100,12 +100,15 @@ public struct ACCommand: Sendable {
     }
 }
 
-/// Normalise what the user typed: emails pass through, bare 10-digit numbers get +91.
+/// Normalise what the user typed: emails pass through; phone numbers become the bare +91… form
+/// MirAIe matches, dropping spaces, dashes and a leading trunk 0.
 public func normalizeUsername(_ raw: String) -> String {
     let s = raw.trimmingCharacters(in: .whitespaces)
-    if s.contains("@") || s.hasPrefix("+") { return s }
-    let digits = s.filter(\.isNumber)
+    if s.contains("@") { return s }
+    let digits = s.filter(\.isASCII).filter(\.isNumber)
+    if s.hasPrefix("+") { return "+" + digits }
     if digits.count == 10 { return "+91" + digits }
+    if digits.count == 11, digits.hasPrefix("0") { return "+91" + digits.dropFirst() }
     if digits.count == 12, digits.hasPrefix("91") { return "+" + digits }
     return s
 }

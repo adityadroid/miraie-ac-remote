@@ -30,6 +30,9 @@ class UsernameTest {
     @Test fun plusNumberKept() = assertEquals("+14155550100", Protocol.normalizeUsername("+14155550100"))
     @Test fun emailKept() = assertEquals("me@example.com", Protocol.normalizeUsername("me@example.com"))
     @Test fun whitespaceTrimmed() = assertEquals("+919876543210", Protocol.normalizeUsername(" 98765 43210 "))
+    @Test fun plusNumberWithSpacesCompacted() = assertEquals("+919876543210", Protocol.normalizeUsername("+91 98765 43210"))
+    @Test fun plusNumberWithDashesCompacted() = assertEquals("+919876543210", Protocol.normalizeUsername("+91-98765-43210"))
+    @Test fun leadingZeroBecomesPlus91() = assertEquals("+919876543210", Protocol.normalizeUsername("09876543210"))
 
     @Test fun loginUsesMobileKeyForNumbers() {
         val b = Protocol.loginBody("9876543210", "secret")

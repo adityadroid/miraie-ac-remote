@@ -25,6 +25,9 @@ check(normalizeUsername(" 98765 43210 ") == "+919876543210", "spaces stripped")
 check(normalizeUsername("919876543210") == "+919876543210", "91 prefix gets +")
 check(normalizeUsername("+919876543210") == "+919876543210", "+91 kept")
 check(normalizeUsername("a@b.com") == "a@b.com", "email kept")
+check(normalizeUsername("+91 98765 43210") == "+919876543210", "+91 with spaces compacted")
+check(normalizeUsername("+91-98765-43210") == "+919876543210", "+91 with dashes compacted")
+check(normalizeUsername("09876543210") == "+919876543210", "leading 0 becomes +91")
 
 // Control payloads
 let temp = json(ACCommand.temperature(23).payload())
