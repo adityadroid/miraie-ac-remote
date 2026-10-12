@@ -1,6 +1,11 @@
 package dev.adityadroid.acremote.data
 
+import org.json.JSONArray
 import org.json.JSONObject
+import java.time.Instant
+import java.time.LocalTime
+import java.time.ZoneId
+import java.time.ZonedDateTime
 import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.floor
@@ -30,6 +35,15 @@ enum class FanSpeed(val wire: String, val label: String) {
 /** Vertical swing: 0 = swing/auto, 1..5 fixed positions. */
 fun swingLabel(v: Int): String = if (v == 0) "Swing" else v.toString()
 
+/** Convertible capacity levels, in menu order. 0 = off. */
+val CONVERTIBLE_LEVELS = listOf(0, 110, 100, 90, 80, 70, 55, 40)
+
+fun convertibleLabel(v: Int): String = when (v) {
+    0 -> "Off"
+    110 -> "110% · HC"
+    else -> "$v%"
+}
+
 data class AcState(
     val power: Boolean = false,
     val mode: AcMode = AcMode.COOL,
@@ -41,6 +55,11 @@ data class AcState(
     val eco: Boolean = false,
     val powerful: Boolean = false,
     val online: Boolean = true,
+    /** Convertible capacity %, 0 = off, null = the model has no convertible support. */
+    val convertible: Int? = null,
+    /** Device timers as epoch seconds; null when unset or already past. */
+    val offTimer: Long? = null,
+    val onTimer: Long? = null,
 )
 
 object Protocol {
@@ -109,10 +128,45 @@ object Protocol {
     fun fan(f: FanSpeed) = mapOf<String, Any>("acfs" to f.wire)
     fun verticalSwing(v: Int) = mapOf<String, Any>("acvs" to v.coerceIn(0, 5))
     fun horizontalSwing(v: Int) = mapOf<String, Any>("achs" to v.coerceIn(0, 5))
-    fun eco(on: Boolean): Map<String, Any> =
-        if (on) linkedMapOf("acem" to "on", "acpm" to "off") else mapOf("acem" to "off")
-    fun powerful(on: Boolean): Map<String, Any> =
-        if (on) linkedMapOf("acpm" to "on", "acem" to "off") else mapOf("acpm" to "off")
+
+    /** Eco on also resets convertible (mutually exclusive), unless the model lacks it. */
+    fun eco(on: Boolean, hasConvertible: Boolean = true): Map<String, Any> = when {
+        !on -> mapOf("acem" to "off")
+        hasConvertible -> linkedMapOf("acem" to "on", "acpm" to "off", "cnv" to 0)
+        else -> linkedMapOf("acem" to "on", "acpm" to "off")
+    }
+
+    /** Powerful on also resets convertible (mutually exclusive), unless the model lacks it. */
+    fun powerful(on: Boolean, hasConvertible: Boolean = true): Map<String, Any> = when {
+        !on -> mapOf("acpm" to "off")
+        hasConvertible -> linkedMapOf("acpm" to "on", "acem" to "off", "cnv" to 0)
+        else -> linkedMapOf("acpm" to "on", "acem" to "off")
+    }
+
+    fun convertible(level: Int): Map<String, Any> =
+        linkedMapOf("cnv" to level, "acem" to "off", "acpm" to "off")
+
+    /** Both timer slots, always sent together; null becomes -1 (unset). */
+    fun timers(offAt: Long?, onAt: Long?): Map<String, Any> =
+        mapOf("actm" to JSONArray().put(offAt ?: -1L).put(onAt ?: -1L))
+
+    /** Sets (or with null clears) the off timer, keeping the current on timer. */
+    fun offTimer(state: AcState, at: Long?) = timers(at, state.onTimer)
+
+    /** Sets (or with null clears) the on timer, keeping the current off timer. */
+    fun onTimer(state: AcState, at: Long?) = timers(state.offTimer, at)
+
+    // ---- time helpers
+
+    /** Next future occurrence of [hour]:[minute] in [now]'s zone (today, or tomorrow if not after now), as epoch seconds. */
+    fun nextOccurrence(hour: Int, minute: Int, now: ZonedDateTime): Long {
+        var t = now.with(LocalTime.of(hour, minute))
+        if (!t.isAfter(now)) t = t.plusDays(1)
+        return t.toEpochSecond()
+    }
+
+    fun nextOccurrence(hour: Int, minute: Int, nowMs: Long = System.currentTimeMillis(), zone: ZoneId = ZoneId.systemDefault()) =
+        nextOccurrence(hour, minute, ZonedDateTime.ofInstant(Instant.ofEpochMilli(nowMs), zone))
 
     // ---- status merge ----
 
@@ -137,7 +191,7 @@ object Protocol {
      * Merges a (possibly partial) status / control JSON into [state]. Keys that are absent,
      * malformed or carry unknown enum values leave the current field untouched.
      */
-    fun merge(state: AcState, json: JSONObject): AcState {
+    fun merge(state: AcState, json: JSONObject, nowSec: Long = System.currentTimeMillis() / 1000): AcState {
         var s = state
         fun has(k: String) = json.has(k) && !json.isNull(k)
         if (has("ps")) onOff(json.get("ps"))?.let { s = s.copy(power = it) }
@@ -152,8 +206,14 @@ object Protocol {
         if (has("acem")) onOff(json.get("acem"))?.let { s = s.copy(eco = it) }
         if (has("acpm")) onOff(json.get("acpm"))?.let { s = s.copy(powerful = it) }
         if (has("onlineStatus")) onOff(json.get("onlineStatus"))?.let { s = s.copy(online = it) }
+        if (has("cnv")) num(json.get("cnv"))?.toInt()?.let { s = s.copy(convertible = it.takeIf { v -> v != 1 && v >= 0 }) }
+        if (has("actm")) json.optJSONArray("actm")?.takeIf { it.length() >= 2 }?.let { arr ->
+            fun slot(i: Int): Long? = num(arr.opt(i))?.toLong()?.takeIf { it > nowSec }
+            s = s.copy(offTimer = slot(0), onTimer = slot(1))
+        }
         return s
     }
 
-    fun merge(state: AcState, settings: Map<String, Any>): AcState = merge(state, JSONObject(settings))
+    fun merge(state: AcState, settings: Map<String, Any>, nowSec: Long = System.currentTimeMillis() / 1000): AcState =
+        merge(state, JSONObject(settings), nowSec)
 }

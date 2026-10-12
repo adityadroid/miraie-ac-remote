@@ -356,8 +356,13 @@ object AcRepository {
     fun setMode(m: AcMode) = send(Protocol.mode(m))
     fun setFan(f: FanSpeed) = send(Protocol.fan(f))
     fun setVerticalSwing(v: Int) = send(Protocol.verticalSwing(v))
-    fun setEco(on: Boolean) = send(Protocol.eco(on))
-    fun setPowerful(on: Boolean) = send(Protocol.powerful(on))
+    fun setEco(on: Boolean) = send(Protocol.eco(on, hasConvertible = _state.value.ac.convertible != null))
+    fun setPowerful(on: Boolean) = send(Protocol.powerful(on, hasConvertible = _state.value.ac.convertible != null))
+    fun setConvertible(level: Int) = send(Protocol.convertible(level))
+
+    /** Epoch seconds, or null to clear. The other slot keeps its current value. */
+    fun setOffTimer(at: Long?) = send(Protocol.offTimer(_state.value.ac, at))
+    fun setOnTimer(at: Long?) = send(Protocol.onTimer(_state.value.ac, at))
 
     /** Slider and +/-: update locally now, publish 450 ms after the last change. */
     fun setTemperature(t: Int) {

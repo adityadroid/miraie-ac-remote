@@ -4,8 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.ZoneId
+import java.time.ZonedDateTime
 
 class RoomTempQuirkTest {
     @Test fun fractionalGarbageUsesFractionTimes100() {
@@ -169,5 +172,150 @@ class StatusMergeTest {
         )
         assertEquals("h1", homes[0].homeId)
         assertEquals(Device("d1", "Bedroom", "u/h1/d1"), homes[0].devices[0])
+    }
+}
+
+class ConvertibleTest {
+    private fun parse(json: String) = Protocol.merge(AcState(), JSONObject(json))
+
+    @Test fun zeroIsOff() = assertEquals(0, parse("""{"cnv":0}""").convertible)
+    @Test fun eightyParses() = assertEquals(80, parse("""{"cnv":80}""").convertible)
+    @Test fun stringFormParses() = assertEquals(110, parse("""{"cnv":"110"}""").convertible)
+    @Test fun missingIsUnsupported() = assertNull(parse("""{"ps":"on"}""").convertible)
+    @Test fun oneIsUnsupported() = assertNull(parse("""{"cnv":1}""").convertible)
+
+    @Test fun labels() {
+        assertEquals("Off", convertibleLabel(0))
+        assertEquals("110% · HC", convertibleLabel(110))
+        assertEquals("55%", convertibleLabel(55))
+        assertEquals(listOf(0, 110, 100, 90, 80, 70, 55, 40), CONVERTIBLE_LEVELS)
+    }
+
+    @Test fun payloadTurnsEcoAndPowerfulOff() {
+        val o = JSONObject(Protocol.control(Protocol.convertible(80)).toString())
+        assertEquals(80, o.getInt("cnv"))
+        assertTrue(o.get("cnv") is Number)
+        assertEquals("off", o.getString("acem"))
+        assertEquals("off", o.getString("acpm"))
+    }
+
+    @Test fun ecoOnSendsCnvZero() {
+        val o = JSONObject(Protocol.control(Protocol.eco(true)).toString())
+        assertEquals(0, o.getInt("cnv"))
+        assertEquals("on", o.getString("acem"))
+    }
+
+    @Test fun powerfulOnSendsCnvZero() {
+        val o = JSONObject(Protocol.control(Protocol.powerful(true)).toString())
+        assertEquals(0, o.getInt("cnv"))
+    }
+
+    @Test fun ecoOffAndUnsupportedModelsDoNotSendCnv() {
+        assertFalse(Protocol.control(Protocol.eco(false)).has("cnv"))
+        assertFalse(Protocol.control(Protocol.eco(true, hasConvertible = false)).has("cnv"))
+        assertFalse(Protocol.control(Protocol.powerful(true, hasConvertible = false)).has("cnv"))
+    }
+
+    @Test fun optimisticExclusivity() {
+        val cnv = Protocol.merge(AcState(eco = true, convertible = 0), Protocol.convertible(70))
+        assertEquals(70, cnv.convertible)
+        assertFalse(cnv.eco)
+        assertFalse(cnv.powerful)
+        val eco = Protocol.merge(cnv, Protocol.eco(true))
+        assertTrue(eco.eco)
+        assertEquals(0, eco.convertible)
+    }
+}
+
+class TimerTest {
+    private val now = 1_800_000_000L
+
+    private fun parse(json: String) = Protocol.merge(AcState(), JSONObject(json), nowSec = now)
+
+    @Test fun unsetSlotsAreNull() {
+        val s = parse("""{"actm":[-1,-1]}""")
+        assertNull(s.offTimer)
+        assertNull(s.onTimer)
+    }
+
+    @Test fun missingIsNull() {
+        val s = parse("""{"ps":"on"}""")
+        assertNull(s.offTimer)
+        assertNull(s.onTimer)
+    }
+
+    @Test fun pastIsNull() {
+        val s = parse("""{"actm":[${now - 60},${now + 600}]}""")
+        assertNull(s.offTimer)
+        assertEquals(now + 600, s.onTimer)
+    }
+
+    @Test fun futureKept() {
+        val s = parse("""{"actm":[${now + 3600},-1]}""")
+        assertEquals(now + 3600, s.offTimer)
+        assertNull(s.onTimer)
+    }
+
+    @Test fun settingOffKeepsOnSlot() {
+        val state = AcState(onTimer = now + 9000)
+        val arr = JSONObject(Protocol.control(Protocol.offTimer(state, now + 100)).toString()).getJSONArray("actm")
+        assertEquals(2, arr.length())
+        assertEquals(now + 100, arr.getLong(0))
+        assertEquals(now + 9000, arr.getLong(1))
+        assertTrue(arr.get(0) is Number)
+    }
+
+    @Test fun settingOnKeepsOffSlotOrMinusOne() {
+        val withOff = AcState(offTimer = now + 100)
+        val a = Protocol.control(Protocol.onTimer(withOff, now + 500)).getJSONArray("actm")
+        assertEquals(now + 100, a.getLong(0))
+        assertEquals(now + 500, a.getLong(1))
+        val b = Protocol.control(Protocol.offTimer(AcState(), now + 100)).getJSONArray("actm")
+        assertEquals(-1L, b.getLong(1))
+    }
+
+    @Test fun clearSendsMinusOne() {
+        val state = AcState(offTimer = now + 100, onTimer = now + 500)
+        val a = JSONObject(Protocol.control(Protocol.offTimer(state, null)).toString()).getJSONArray("actm")
+        assertEquals(-1L, a.getLong(0))
+        assertEquals(now + 500, a.getLong(1))
+        val b = Protocol.control(Protocol.onTimer(state, null)).getJSONArray("actm")
+        assertEquals(now + 100, b.getLong(0))
+        assertEquals(-1L, b.getLong(1))
+    }
+
+    @Test fun optimisticMergeOfTimerPayload() {
+        val start = AcState(onTimer = now + 500)
+        val s = Protocol.merge(start, Protocol.offTimer(start, now + 100), nowSec = now)
+        assertEquals(now + 100, s.offTimer)
+        assertEquals(now + 500, s.onTimer)
+        val cleared = Protocol.merge(s, Protocol.offTimer(s, null), nowSec = now)
+        assertNull(cleared.offTimer)
+        assertEquals(now + 500, cleared.onTimer)
+    }
+}
+
+class NextOccurrenceTest {
+    private val zone = ZoneId.of("Asia/Kolkata")
+    private val now = ZonedDateTime.of(2026, 10, 12, 22, 0, 0, 0, zone)
+
+    @Test fun laterTodayStaysToday() {
+        val expected = ZonedDateTime.of(2026, 10, 12, 23, 30, 0, 0, zone).toEpochSecond()
+        assertEquals(expected, Protocol.nextOccurrence(23, 30, now))
+    }
+
+    @Test fun earlierRollsToTomorrow() {
+        val expected = ZonedDateTime.of(2026, 10, 13, 7, 0, 0, 0, zone).toEpochSecond()
+        assertEquals(expected, Protocol.nextOccurrence(7, 0, now))
+    }
+
+    @Test fun sameMinuteRollsToTomorrow() {
+        val expected = ZonedDateTime.of(2026, 10, 13, 22, 0, 0, 0, zone).toEpochSecond()
+        assertEquals(expected, Protocol.nextOccurrence(22, 0, now))
+    }
+
+    @Test fun epochMillisOverloadUsesZone() {
+        val expected = ZonedDateTime.of(2026, 10, 12, 23, 30, 0, 0, zone).toEpochSecond()
+        assertEquals(expected, Protocol.nextOccurrence(23, 30, now.toInstant().toEpochMilli(), zone))
     }
 }

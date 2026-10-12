@@ -54,6 +54,13 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AcRepository.init(this)
+        // Debug builds only: `adb shell am start -n …/.MainActivity --ez demo true` shows sample data,
+        // so the panel can be checked without a MirAIe account.
+        val debuggable = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (debuggable && intent.getBooleanExtra("demo", false)) {
+            setContent { AcTheme { PanelFrame(onDismiss = ::finish) { dev.adityadroid.acremote.ui.DemoPanel() } } }
+            return
+        }
         setContent { AcTheme { Root(onDismiss = ::finish) } }
     }
 
@@ -72,7 +79,6 @@ class MainActivity : ComponentActivity() {
 private fun Root(onDismiss: () -> Unit) {
     val ui by AcRepository.state.collectAsStateWithLifecycle()
     val scope = rememberCoroutineScope()
-    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
     val actions = remember {
         PanelActions(
             onPower = AcRepository::setPower,
@@ -82,10 +88,32 @@ private fun Root(onDismiss: () -> Unit) {
             onFan = AcRepository::setFan,
             onPowerful = AcRepository::setPowerful,
             onSwing = AcRepository::setVerticalSwing,
+            onConvertible = AcRepository::setConvertible,
+            onOffTimer = AcRepository::setOffTimer,
+            onOnTimer = AcRepository::setOnTimer,
             onSignOut = AcRepository::signOut,
         )
     }
 
+    PanelFrame(onDismiss) {
+        when (ui.phase) {
+            Phase.NEEDS_LOGIN -> LoginScreen(
+                busy = ui.loggingIn,
+                error = ui.loginError,
+                onLogin = { u, p -> scope.launch { AcRepository.login(u, p) } },
+            )
+            Phase.LOADING -> Box(Modifier.fillMaxWidth().heightIn(min = 220.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Palette.Accent, strokeWidth = 2.dp)
+            }
+            Phase.READY -> AcPanel(ui, actions)
+        }
+    }
+}
+
+/** Dimmed backdrop with the dark card pinned near the top; tapping the backdrop dismisses. */
+@Composable
+private fun PanelFrame(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    val appear = remember { MutableTransitionState(false).apply { targetState = true } }
     Box(
         Modifier
             .fillMaxSize()
@@ -113,17 +141,7 @@ private fun Root(onDismiss: () -> Unit) {
                     .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
                     .verticalScroll(rememberScrollState()),
             ) {
-                when (ui.phase) {
-                    Phase.NEEDS_LOGIN -> LoginScreen(
-                        busy = ui.loggingIn,
-                        error = ui.loginError,
-                        onLogin = { u, p -> scope.launch { AcRepository.login(u, p) } },
-                    )
-                    Phase.LOADING -> Box(Modifier.fillMaxWidth().heightIn(min = 220.dp), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = Palette.Accent, strokeWidth = 2.dp)
-                    }
-                    Phase.READY -> AcPanel(ui, actions)
-                }
+                content()
             }
         }
     }

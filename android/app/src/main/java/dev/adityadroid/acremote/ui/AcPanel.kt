@@ -34,7 +34,10 @@ import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.PowerSettingsNew
 import androidx.compose.material.icons.rounded.Remove
-import androidx.compose.material.icons.outlined.Toys
+import androidx.compose.material.icons.outlined.Cyclone
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Speed
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -54,10 +57,15 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.adityadroid.acremote.data.AcMode
+import dev.adityadroid.acremote.data.AcState
+import dev.adityadroid.acremote.data.CONVERTIBLE_LEVELS
+import dev.adityadroid.acremote.data.Phase
+import dev.adityadroid.acremote.data.convertibleLabel
 import dev.adityadroid.acremote.data.FanSpeed
 import dev.adityadroid.acremote.data.Link
 import dev.adityadroid.acremote.data.MAX_TEMP
@@ -76,13 +84,16 @@ class PanelActions(
     val onPowerful: (Boolean) -> Unit,
     val onSwing: (Int) -> Unit,
     val onSignOut: () -> Unit,
+    val onConvertible: (Int) -> Unit = {},
+    val onOffTimer: (Long?) -> Unit = {},
+    val onOnTimer: (Long?) -> Unit = {},
 )
 
 private fun modeIcon(m: AcMode): ImageVector = when (m) {
     AcMode.COOL -> Icons.Outlined.AcUnit
     AcMode.AUTO -> Icons.Outlined.Autorenew
     AcMode.DRY -> Icons.Outlined.WaterDrop
-    AcMode.FAN -> Icons.Outlined.Toys
+    AcMode.FAN -> Icons.Outlined.Cyclone
     AcMode.HEAT -> Icons.Outlined.WbSunny
 }
 
@@ -170,7 +181,7 @@ fun AcPanel(ui: UiState, actions: PanelActions, modifier: Modifier = Modifier) {
                 options = AcMode.entries.map { it.label to { actions.onMode(it) } },
             )
             MenuTile(
-                icon = Icons.Outlined.Toys,
+                icon = Icons.Outlined.Cyclone,
                 label = "Fan speed", value = ac.fan.label,
                 options = FanSpeed.entries.map { it.label to { actions.onFan(it) } },
             )
@@ -182,6 +193,19 @@ fun AcPanel(ui: UiState, actions: PanelActions, modifier: Modifier = Modifier) {
                 icon = Icons.Outlined.Air, label = "Airflow", value = swingLabel(ac.vSwing),
                 options = (0..5).map { v -> swingLabel(v) to { actions.onSwing(v) } },
             )
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        // ---- convertible + timers
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            ac.convertible?.let { cnv ->
+                MenuTile(
+                    icon = Icons.Outlined.Speed, label = "Convertible", value = convertibleLabel(cnv),
+                    options = CONVERTIBLE_LEVELS.map { v -> convertibleLabel(v) to { actions.onConvertible(v) } },
+                )
+            }
+            TimerTile(ac, actions)
         }
 
         Spacer(Modifier.height(14.dp))
@@ -306,6 +330,26 @@ private fun RowScope.ToggleTile(icon: ImageVector, label: String, on: Boolean, o
 }
 
 @Composable
+private fun RowScope.TimerTile(ac: AcState, actions: PanelActions) {
+    var open by remember { mutableStateOf(false) }
+    val fmt = rememberClockFormatter()
+    TileFrame(onClick = { open = true }) {
+        TileBody(Icons.Outlined.Schedule, "Timer", timerSummary(ac.offTimer?.let(fmt), ac.onTimer?.let(fmt))) {
+            Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, "Edit timers", tint = Palette.Secondary, modifier = Modifier.size(18.dp))
+        }
+    }
+    if (open) {
+        TimerDialog(
+            offAt = ac.offTimer,
+            onAt = ac.onTimer,
+            onOffTimer = actions.onOffTimer,
+            onOnTimer = actions.onOnTimer,
+            onDismiss = { open = false },
+        )
+    }
+}
+
+@Composable
 private fun Footer(ui: UiState, onSignOut: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(start = 4.dp)) {
@@ -370,3 +414,25 @@ private fun Footer(ui: UiState, onSignOut: () -> Unit) {
 @Composable
 private fun FooterText(s: String) =
     Text(s, color = Palette.Secondary, fontSize = 13.sp, fontFamily = Rounded, fontWeight = FontWeight.SemiBold)
+
+/** Panel with sample state; used by the preview and the debug-only `--ez demo true` launch. */
+@Composable
+internal fun DemoPanel() {
+    val now = System.currentTimeMillis() / 1000
+    val ui = UiState(
+        phase = Phase.READY,
+        hasStatus = true,
+        link = Link.CONNECTED,
+        ac = AcState(
+            power = true, setTemp = 24.0, roomTemp = 27.5,
+            convertible = 80, offTimer = now + 2 * 3600,
+        ),
+    )
+    AcPanel(ui, PanelActions({}, {}, {}, {}, {}, {}, {}, {}))
+}
+
+@Preview(widthDp = 400, heightDp = 820, backgroundColor = 0xFF0E0E0E, showBackground = true)
+@Composable
+private fun AcPanelPreview() {
+    AcTheme { DemoPanel() }
+}
