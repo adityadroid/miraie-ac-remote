@@ -75,7 +75,7 @@ public struct ACState: Equatable, Sendable {
     public static let maxTemp = 30
 
     /// Merge a status payload (full REST status or partial MQTT update).
-    public mutating func merge(_ s: [String: Any]) {
+    public mutating func merge(_ s: [String: Any], timeZone: TimeZone = .current) {
         if let v = s["onlineStatus"] { online = Self.string(v) == "true" }
         if let v = s["ps"] { power = Self.string(v) == "on" }
         if let v = s["acmd"], let m = ACMode(rawValue: Self.string(v)) { mode = m }
@@ -89,8 +89,8 @@ public struct ACState: Equatable, Sendable {
             converti = Converti(rawValue: n) // 1 ("not supported") and unknown values → nil
         }
         if let slots = s["actm"] as? [Any], slots.count >= 2 {
-            offTimer = Int(Self.string(slots[0])) ?? -1
-            onTimer = Int(Self.string(slots[1])) ?? -1
+            offTimer = ACCommand.fromWireTime(Int(Self.string(slots[0])) ?? -1, timeZone)
+            onTimer = ACCommand.fromWireTime(Int(Self.string(slots[1])) ?? -1, timeZone)
         }
     }
 
@@ -132,9 +132,24 @@ public struct ACCommand: Sendable {
     public static func converti(_ c: Converti) -> ACCommand {
         .init(fields: ["cnv": c.rawValue, "acem": "off", "acpm": "off"])
     }
-    /// Both slots always go out together; pass -1 to clear one.
-    public static func timers(off: Int, on: Int) -> ACCommand {
-        .init(fields: ["actm": [off, on]])
+    /// Both slots always go out together; pass -1 to clear one. Takes real Unix seconds.
+    public static func timers(off: Int, on: Int, timeZone: TimeZone = .current) -> ACCommand {
+        .init(fields: ["actm": [toWireTime(off, timeZone), toWireTime(on, timeZone)]])
+    }
+
+    /// The AC reads `actm` as local wall-clock time written as if it were UTC, not as a true
+    /// Unix time: the real epoch for an 01:00 IST timer showed up around 19:30–20:00, the UTC
+    /// wall clock. So shift by the zone offset going out, and back coming in.
+    public static func toWireTime(_ seconds: Int, _ timeZone: TimeZone = .current) -> Int {
+        guard seconds > 0 else { return seconds }
+        let date = Date(timeIntervalSince1970: TimeInterval(seconds))
+        return seconds + timeZone.secondsFromGMT(for: date)
+    }
+
+    public static func fromWireTime(_ wire: Int, _ timeZone: TimeZone = .current) -> Int {
+        guard wire > 0 else { return wire }
+        let guess = Date(timeIntervalSince1970: TimeInterval(wire))
+        return wire - timeZone.secondsFromGMT(for: guess.addingTimeInterval(-TimeInterval(timeZone.secondsFromGMT(for: guess))))
     }
 
     public func payload() -> Data {

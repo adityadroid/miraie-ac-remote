@@ -229,8 +229,12 @@ class ConvertibleTest {
 
 class TimerTest {
     private val now = 1_800_000_000L
+    private val utc = ZoneId.of("UTC")
+    private val ist = ZoneId.of("Asia/Kolkata")
+    private val istOffset = 19_800L // +05:30
 
-    private fun parse(json: String) = Protocol.merge(AcState(), JSONObject(json), nowSec = now)
+    // In UTC the wire value equals the real epoch, so these check the slot handling on its own.
+    private fun parse(json: String) = Protocol.merge(AcState(), JSONObject(json), nowSec = now, zone = utc)
 
     @Test fun unsetSlotsAreNull() {
         val s = parse("""{"actm":[-1,-1]}""")
@@ -258,7 +262,7 @@ class TimerTest {
 
     @Test fun settingOffKeepsOnSlot() {
         val state = AcState(onTimer = now + 9000)
-        val arr = JSONObject(Protocol.control(Protocol.offTimer(state, now + 100)).toString()).getJSONArray("actm")
+        val arr = JSONObject(Protocol.control(Protocol.offTimer(state, now + 100, utc)).toString()).getJSONArray("actm")
         assertEquals(2, arr.length())
         assertEquals(now + 100, arr.getLong(0))
         assertEquals(now + 9000, arr.getLong(1))
@@ -267,31 +271,62 @@ class TimerTest {
 
     @Test fun settingOnKeepsOffSlotOrMinusOne() {
         val withOff = AcState(offTimer = now + 100)
-        val a = Protocol.control(Protocol.onTimer(withOff, now + 500)).getJSONArray("actm")
+        val a = Protocol.control(Protocol.onTimer(withOff, now + 500, utc)).getJSONArray("actm")
         assertEquals(now + 100, a.getLong(0))
         assertEquals(now + 500, a.getLong(1))
-        val b = Protocol.control(Protocol.offTimer(AcState(), now + 100)).getJSONArray("actm")
+        val b = Protocol.control(Protocol.offTimer(AcState(), now + 100, utc)).getJSONArray("actm")
         assertEquals(-1L, b.getLong(1))
     }
 
     @Test fun clearSendsMinusOne() {
         val state = AcState(offTimer = now + 100, onTimer = now + 500)
-        val a = JSONObject(Protocol.control(Protocol.offTimer(state, null)).toString()).getJSONArray("actm")
+        val a = JSONObject(Protocol.control(Protocol.offTimer(state, null, utc)).toString()).getJSONArray("actm")
         assertEquals(-1L, a.getLong(0))
         assertEquals(now + 500, a.getLong(1))
-        val b = Protocol.control(Protocol.onTimer(state, null)).getJSONArray("actm")
+        val b = Protocol.control(Protocol.onTimer(state, null, utc)).getJSONArray("actm")
         assertEquals(now + 100, b.getLong(0))
         assertEquals(-1L, b.getLong(1))
     }
 
     @Test fun optimisticMergeOfTimerPayload() {
         val start = AcState(onTimer = now + 500)
-        val s = Protocol.merge(start, Protocol.offTimer(start, now + 100), nowSec = now)
+        val s = Protocol.merge(start, Protocol.offTimer(start, now + 100, utc), nowSec = now, zone = utc)
         assertEquals(now + 100, s.offTimer)
         assertEquals(now + 500, s.onTimer)
-        val cleared = Protocol.merge(s, Protocol.offTimer(s, null), nowSec = now)
+        val cleared = Protocol.merge(s, Protocol.offTimer(s, null, utc), nowSec = now, zone = utc)
         assertNull(cleared.offTimer)
         assertEquals(now + 500, cleared.onTimer)
+    }
+
+    // ---- zone shift: the AC reads actm as local wall-clock time encoded as UTC
+
+    @Test fun istTimerSendsLocalWallClockAsUtc() {
+        // 01:00 IST on 13 Oct 2026 is 19:30 UTC on the 12th; the AC must receive "01:00" as if UTC.
+        val oneAmIst = ZonedDateTime.of(2026, 10, 13, 1, 0, 0, 0, ist).toEpochSecond()
+        val wire = Protocol.control(Protocol.offTimer(AcState(), oneAmIst, ist)).getJSONArray("actm").getLong(0)
+        assertEquals(oneAmIst + istOffset, wire)
+        val wireAsUtc = java.time.Instant.ofEpochSecond(wire).atZone(utc)
+        assertEquals(1, wireAsUtc.hour)
+        assertEquals(0, wireAsUtc.minute)
+    }
+
+    @Test fun istStatusIsShiftedBack() {
+        val oneAmIst = ZonedDateTime.of(2026, 10, 13, 1, 0, 0, 0, ist).toEpochSecond()
+        val nowIst = oneAmIst - 3 * 3600
+        val s = Protocol.merge(AcState(), JSONObject("""{"actm":[${oneAmIst + istOffset},-1]}"""), nowSec = nowIst, zone = ist)
+        assertEquals(oneAmIst, s.offTimer)
+    }
+
+    @Test fun istRoundTripThroughOptimisticMerge() {
+        val at = 1_800_000_000L
+        val s = Protocol.merge(AcState(), Protocol.onTimer(AcState(), at, ist), nowSec = at - 60, zone = ist)
+        assertEquals(at, s.onTimer)
+    }
+
+    @Test fun minusOneIsNeverShifted() {
+        val arr = Protocol.control(Protocol.timers(null, null, ist)).getJSONArray("actm")
+        assertEquals(-1L, arr.getLong(0))
+        assertEquals(-1L, arr.getLong(1))
     }
 }
 

@@ -55,7 +55,7 @@ Topics per device: `<base>/control` (publish), `<base>/status` and
 | `acng`   | nanoe                        | `"on"` / `"off"` (not on all models)           |
 | `acdc`   | indoor display               | `"on"` / `"off"`                               |
 | `cnv`    | convertible (capacity %)     | `110` `100` `90` `80` `70` `55` `40`; `0` off; `1` model doesn't support it |
-| `actm`   | device timers                | `[offAt, onAt]` Unix seconds; `-1` = not set   |
+| `actm`   | device timers                | `[offAt, onAt]` local-time seconds (see below); `-1` = not set |
 
 **`rmtmp` quirk:** valid values have a fractional part of `.0` or `.5`. Some firmware
 sends e.g. `150.27`; when the fraction is anything else, the room temperature is
@@ -97,10 +97,14 @@ mutually exclusive with it, so turning one of those on resets `cnv` to `0` and v
 When status reports `cnv: 1` (or omits it) the model has no convertible support; hide the control.
 
 **Timers** run on the AC itself, so they fire with every client closed. Each slot holds the
-Unix time (seconds) when the AC switches off / on, or `-1` when unset. Always send the full
-pair: to set the off timer, keep the current on timer in slot 1. Treat a time already in the
-past as unset when displaying it.
-Source: the Raycast MirAIe extension (`buildTimerPayload`).
+time the AC switches off / on, or `-1` when unset. Always send the full pair: to set the off
+timer, keep the current on timer in slot 1. Treat a time already in the past as unset when
+displaying it. Source for the field: the Raycast MirAIe extension (`buildTimerPayload`).
+
+The value is **local wall-clock time encoded as if it were UTC**, not a true Unix time:
+`wire = unixSeconds + utcOffsetSeconds` (IST: +19800), and `unixSeconds = wire − offset` when
+reading. Sending the plain Unix time for an 01:00 IST timer showed up around 19:30–20:00, the
+UTC wall clock. Raycast sends plain Unix time, which only works for users on UTC.
 
 Recurring weekly schedules from the MirAIe app are stored in MirAIe's cloud through an
 undocumented REST API and are not covered here. Sleep mode also has no known key yet.

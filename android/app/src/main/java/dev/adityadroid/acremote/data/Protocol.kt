@@ -146,15 +146,26 @@ object Protocol {
     fun convertible(level: Int): Map<String, Any> =
         linkedMapOf("cnv" to level, "acem" to "off", "acpm" to "off")
 
-    /** Both timer slots, always sent together; null becomes -1 (unset). */
-    fun timers(offAt: Long?, onAt: Long?): Map<String, Any> =
-        mapOf("actm" to JSONArray().put(offAt ?: -1L).put(onAt ?: -1L))
+    /** Both timer slots, always sent together; null becomes -1 (unset). Takes real epoch seconds. */
+    fun timers(offAt: Long?, onAt: Long?, zone: ZoneId = ZoneId.systemDefault()): Map<String, Any> =
+        mapOf("actm" to JSONArray().put(offAt?.let { toWireTime(it, zone) } ?: -1L).put(onAt?.let { toWireTime(it, zone) } ?: -1L))
+
+    /**
+     * The AC reads `actm` as local wall-clock time written as if it were UTC, not as a true
+     * Unix time: sending the real epoch for an 01:00 IST timer showed up around 19:30–20:00,
+     * i.e. the UTC wall clock. So shift by the zone offset on the way out and back on the way in.
+     */
+    fun toWireTime(epochSec: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
+        epochSec + zone.rules.getOffset(Instant.ofEpochSecond(epochSec)).totalSeconds
+
+    fun fromWireTime(wire: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
+        wire - zone.rules.getOffset(java.time.LocalDateTime.ofEpochSecond(wire, 0, java.time.ZoneOffset.UTC)).totalSeconds
 
     /** Sets (or with null clears) the off timer, keeping the current on timer. */
-    fun offTimer(state: AcState, at: Long?) = timers(at, state.onTimer)
+    fun offTimer(state: AcState, at: Long?, zone: ZoneId = ZoneId.systemDefault()) = timers(at, state.onTimer, zone)
 
     /** Sets (or with null clears) the on timer, keeping the current off timer. */
-    fun onTimer(state: AcState, at: Long?) = timers(state.offTimer, at)
+    fun onTimer(state: AcState, at: Long?, zone: ZoneId = ZoneId.systemDefault()) = timers(state.offTimer, at, zone)
 
     // ---- time helpers
 
@@ -191,7 +202,12 @@ object Protocol {
      * Merges a (possibly partial) status / control JSON into [state]. Keys that are absent,
      * malformed or carry unknown enum values leave the current field untouched.
      */
-    fun merge(state: AcState, json: JSONObject, nowSec: Long = System.currentTimeMillis() / 1000): AcState {
+    fun merge(
+        state: AcState,
+        json: JSONObject,
+        nowSec: Long = System.currentTimeMillis() / 1000,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): AcState {
         var s = state
         fun has(k: String) = json.has(k) && !json.isNull(k)
         if (has("ps")) onOff(json.get("ps"))?.let { s = s.copy(power = it) }
@@ -208,12 +224,17 @@ object Protocol {
         if (has("onlineStatus")) onOff(json.get("onlineStatus"))?.let { s = s.copy(online = it) }
         if (has("cnv")) num(json.get("cnv"))?.toInt()?.let { s = s.copy(convertible = it.takeIf { v -> v != 1 && v >= 0 }) }
         if (has("actm")) json.optJSONArray("actm")?.takeIf { it.length() >= 2 }?.let { arr ->
-            fun slot(i: Int): Long? = num(arr.opt(i))?.toLong()?.takeIf { it > nowSec }
+            fun slot(i: Int): Long? = num(arr.opt(i))?.toLong()?.takeIf { it > 0 }
+                ?.let { fromWireTime(it, zone) }?.takeIf { it > nowSec }
             s = s.copy(offTimer = slot(0), onTimer = slot(1))
         }
         return s
     }
 
-    fun merge(state: AcState, settings: Map<String, Any>, nowSec: Long = System.currentTimeMillis() / 1000): AcState =
-        merge(state, JSONObject(settings), nowSec)
+    fun merge(
+        state: AcState,
+        settings: Map<String, Any>,
+        nowSec: Long = System.currentTimeMillis() / 1000,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): AcState = merge(state, JSONObject(settings), nowSec, zone)
 }

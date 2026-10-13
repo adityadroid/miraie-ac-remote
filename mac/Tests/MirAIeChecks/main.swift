@@ -67,15 +67,34 @@ check(json(ACCommand.eco(false).payload())["cnv"] == nil, "eco off leaves cnv al
 
 // Timers
 let now = Date(timeIntervalSince1970: 1_800_000_000)
+// In UTC the wire value equals the real epoch, so these check slot handling on its own.
+let utc = TimeZone(identifier: "UTC")!
+let ist = TimeZone(identifier: "Asia/Kolkata")!
 var timers = ACState()
-timers.merge(["actm": [1_800_003_600, -1]])
+timers.merge(["actm": [1_800_003_600, -1]], timeZone: utc)
 check(timers.offAt(now: now) == Date(timeIntervalSince1970: 1_800_003_600), "future off timer kept")
 check(timers.onAt(now: now) == nil, "-1 on timer is unset")
-timers.merge(["actm": [1_799_990_000, 1_800_007_200]])
+timers.merge(["actm": [1_799_990_000, 1_800_007_200]], timeZone: utc)
 check(timers.offAt(now: now) == nil, "past off timer counts as unset")
 check(timers.onAt(now: now) != nil, "on timer parsed")
-check(json(ACCommand.timers(off: 1_800_003_600, on: -1).payload())["actm"] as? [Int] == [1_800_003_600, -1],
+check(json(ACCommand.timers(off: 1_800_003_600, on: -1, timeZone: utc).payload())["actm"] as? [Int] == [1_800_003_600, -1],
       "timer payload sends both slots")
+
+// Zone shift: the AC reads actm as local wall-clock time encoded as UTC.
+var istCal = Calendar(identifier: .gregorian)
+istCal.timeZone = ist
+var utcCal = Calendar(identifier: .gregorian)
+utcCal.timeZone = utc
+let oneAM = Int(istCal.date(from: DateComponents(year: 2026, month: 10, day: 13, hour: 1))!.timeIntervalSince1970)
+let wire = (json(ACCommand.timers(off: oneAM, on: -1, timeZone: ist).payload())["actm"] as? [Int])?.first ?? 0
+check(wire == oneAM + 19_800, "01:00 IST goes out shifted by +5:30")
+let wireDate = Date(timeIntervalSince1970: TimeInterval(wire))
+check(utcCal.component(.hour, from: wireDate) == 1 && utcCal.component(.minute, from: wireDate) == 0,
+      "wire value reads as 01:00 when taken as UTC")
+var fromAC = ACState()
+fromAC.merge(["actm": [oneAM + 19_800, -1]], timeZone: ist)
+check(fromAC.offTimer == oneAM, "status actm shifted back to the real time")
+check(ACCommand.toWireTime(-1, ist) == -1 && ACCommand.fromWireTime(-1, ist) == -1, "-1 never shifted")
 
 var cal = Calendar(identifier: .gregorian)
 cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!
