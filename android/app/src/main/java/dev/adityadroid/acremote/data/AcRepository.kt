@@ -22,6 +22,8 @@ import org.eclipse.paho.client.mqttv3.MqttConnectOptions
 import org.eclipse.paho.client.mqttv3.MqttException
 import org.eclipse.paho.client.mqttv3.MqttMessage
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence
+import androidx.core.content.edit
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
 import java.util.UUID
@@ -73,10 +75,16 @@ object AcRepository {
     private var reconnectJob: Job? = null
     private var syncTimeoutJob: Job? = null
     private var tempJob: Job? = null
+    private var timerJob: Job? = null
+
+    /** Measured AC clock for timers (not secret, so plain prefs). */
+    private lateinit var clockPrefs: android.content.SharedPreferences
+    private const val KEY_DEVICE_CLOCK = "timer_device_clock"
 
     @Synchronized
     fun init(context: Context) {
         if (::store.isInitialized) return
+        clockPrefs = context.applicationContext.getSharedPreferences("ac_timer_clock", Context.MODE_PRIVATE)
         store = CredentialStore(context.applicationContext)
         session = store.loadSession()
         _state.update { it.copy(phase = if (store.hasCredentials) Phase.LOADING else Phase.NEEDS_LOGIN) }
@@ -361,8 +369,54 @@ object AcRepository {
     fun setConvertible(level: Int) = send(Protocol.convertible(level))
 
     /** Epoch seconds, or null to clear. The other slot keeps its current value. */
-    fun setOffTimer(at: Long?) = send(Protocol.offTimer(_state.value.ac, at))
-    fun setOnTimer(at: Long?) = send(Protocol.onTimer(_state.value.ac, at))
+    fun setOffTimer(at: Long?) = setTimers(at, _state.value.ac.onTimer)
+    fun setOnTimer(at: Long?) = setTimers(_state.value.ac.offTimer, at)
+
+    private fun setTimers(off: Long?, on: Long?) {
+        // Show the real target times right away; the wire values are on the AC's clock.
+        _state.update { it.copy(ac = it.ac.copy(offTimer = off, onTimer = on), syncing = true, error = null) }
+        timerJob?.cancel()
+        timerJob = scope.launch {
+            try {
+                sendTimers(off, on, retry = true)
+            } catch (e: Exception) {
+                Log.w(TAG, "Timer update failed", e)
+                _state.update { it.copy(syncing = false, error = friendly(e)) }
+            }
+        }
+    }
+
+    /**
+     * Sends real times converted to the AC's clock, then checks what the AC stored. If a slot
+     * landed more than a minute off, the AC's clock has moved: recalibrate and send once more.
+     */
+    private suspend fun sendTimers(off: Long?, on: Long?, retry: Boolean) {
+        val deviceNow = clockPrefs.takeIf { it.contains(KEY_DEVICE_CLOCK) }?.getLong(KEY_DEVICE_CLOCK, 0L)
+        val sentAt = System.currentTimeMillis() / 1000
+        val settings = Protocol.timers(off, on, deviceNow, sentAt)
+        val sent = (settings["actm"] as JSONArray).let { a -> List(a.length()) { a.getLong(it) } }
+        publish(settings)
+
+        delay(5_000)
+        val d = ensureDevice()
+        val json = authed { MiraieApi.status(it, d.deviceId) }
+        val stored = json.optJSONArray("actm")?.takeIf { it.length() >= 2 }?.let { a -> List(2) { a.optLong(it, -1L) } }
+        if (stored != null) {
+            val slot = listOf(off, on).indices.firstOrNull { i -> listOf(off, on)[i] != null && stored[i] > 0 }
+            if (slot != null) {
+                val target = listOf(off, on)[slot]!!
+                val missBy = kotlin.math.abs(stored[slot] - target)
+                if (deviceNow == null || missBy > 60) {
+                    clockPrefs.edit { putLong(KEY_DEVICE_CLOCK, TimerClock.measure(sent[slot], sentAt, stored[slot])) }
+                    if (missBy > 60 && retry) {
+                        sendTimers(off, on, retry = false)
+                        return
+                    }
+                }
+            }
+        }
+        _state.update { it.copy(ac = Protocol.merge(it.ac, json), syncing = false) }
+    }
 
     /** Slider and +/-: update locally now, publish 450 ms after the last change. */
     fun setTemperature(t: Int) {

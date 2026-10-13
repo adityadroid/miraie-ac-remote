@@ -75,7 +75,7 @@ public struct ACState: Equatable, Sendable {
     public static let maxTemp = 30
 
     /// Merge a status payload (full REST status or partial MQTT update).
-    public mutating func merge(_ s: [String: Any], timeZone: TimeZone = .current) {
+    public mutating func merge(_ s: [String: Any]) {
         if let v = s["onlineStatus"] { online = Self.string(v) == "true" }
         if let v = s["ps"] { power = Self.string(v) == "on" }
         if let v = s["acmd"], let m = ACMode(rawValue: Self.string(v)) { mode = m }
@@ -89,8 +89,8 @@ public struct ACState: Equatable, Sendable {
             converti = Converti(rawValue: n) // 1 ("not supported") and unknown values → nil
         }
         if let slots = s["actm"] as? [Any], slots.count >= 2 {
-            offTimer = ACCommand.fromWireTime(Int(Self.string(slots[0])) ?? -1, timeZone)
-            onTimer = ACCommand.fromWireTime(Int(Self.string(slots[1])) ?? -1, timeZone)
+            offTimer = Int(Self.string(slots[0])) ?? -1 // reported as real Unix time
+            onTimer = Int(Self.string(slots[1])) ?? -1
         }
     }
 
@@ -132,30 +132,46 @@ public struct ACCommand: Sendable {
     public static func converti(_ c: Converti) -> ACCommand {
         .init(fields: ["cnv": c.rawValue, "acem": "off", "acpm": "off"])
     }
-    /// Both slots always go out together; pass -1 to clear one. Takes real Unix seconds.
-    public static func timers(off: Int, on: Int, timeZone: TimeZone = .current) -> ACCommand {
-        .init(fields: ["actm": [toWireTime(off, timeZone), toWireTime(on, timeZone)]])
-    }
-
-    /// The AC reads `actm` as local wall-clock time written as if it were UTC, not as a true
-    /// Unix time: the real epoch for an 01:00 IST timer showed up around 19:30–20:00, the UTC
-    /// wall clock. So shift by the zone offset going out, and back coming in.
-    public static func toWireTime(_ seconds: Int, _ timeZone: TimeZone = .current) -> Int {
-        guard seconds > 0 else { return seconds }
-        let date = Date(timeIntervalSince1970: TimeInterval(seconds))
-        return seconds + timeZone.secondsFromGMT(for: date)
-    }
-
-    public static func fromWireTime(_ wire: Int, _ timeZone: TimeZone = .current) -> Int {
-        guard wire > 0 else { return wire }
-        let guess = Date(timeIntervalSince1970: TimeInterval(wire))
-        return wire - timeZone.secondsFromGMT(for: guess.addingTimeInterval(-TimeInterval(timeZone.secondsFromGMT(for: guess))))
+    /// Both slots always go out together; -1 clears a slot. Takes real Unix times and converts
+    /// them to the AC's own clock (see `TimerClock`).
+    public static func timers(off: Int, on: Int, clock: TimerClock) -> ACCommand {
+        .init(fields: ["actm": [clock.toDevice(off), clock.toDevice(on)]])
     }
 
     public func payload() -> Data {
         var body: [String: Any] = ["ki": 1, "cnt": "an", "sid": "1"]
         for (k, v) in fields { body[k] = v }
         return try! JSONSerialization.data(withJSONObject: body, options: [.sortedKeys])
+    }
+}
+
+/// The AC counts timers against its own clock, which can be far from real time (one unit sat at
+/// 10 Oct 00:00 UTC while it was really the 13th). It fires a timer `sent − deviceNow` seconds
+/// later, and MirAIe reports the slot back as the real time it will fire:
+///     stored = sent + realNow − deviceNow
+/// So to fire at real time T, send `T − (realNow − deviceNow)`. Status values need no conversion.
+public struct TimerClock: Sendable, Equatable {
+    /// The AC's (stopped) clock reading in Unix seconds; nil until calibrated.
+    public var deviceNow: Int?
+
+    public init(deviceNow: Int? = nil) {
+        self.deviceNow = deviceNow
+    }
+
+    /// Real seconds the AC's clock lags behind. Assumes the AC clock is stopped, as measured;
+    /// 0 until calibrated, which makes the first send a plain Unix time.
+    public func lag(at now: Int) -> Int {
+        guard let deviceNow else { return 0 }
+        return now - deviceNow
+    }
+
+    public func toDevice(_ realTime: Int, now: Int = Int(Date().timeIntervalSince1970)) -> Int {
+        realTime > 0 ? realTime - lag(at: now) : realTime
+    }
+
+    /// The device clock implied by one round trip: we sent `sent` at `sentAt`, the AC reported `stored`.
+    public static func measure(sent: Int, sentAt: Int, stored: Int) -> Int {
+        sent + sentAt - stored
     }
 }
 

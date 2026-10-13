@@ -101,10 +101,25 @@ time the AC switches off / on, or `-1` when unset. Always send the full pair: to
 timer, keep the current on timer in slot 1. Treat a time already in the past as unset when
 displaying it. Source for the field: the Raycast MirAIe extension (`buildTimerPayload`).
 
-The value is **local wall-clock time encoded as if it were UTC**, not a true Unix time:
-`wire = unixSeconds + utcOffsetSeconds` (IST: +19800), and `unixSeconds = wire − offset` when
-reading. Sending the plain Unix time for an 01:00 IST timer showed up around 19:30–20:00, the
-UTC wall clock. Raycast sends plain Unix time, which only works for users on UTC.
+**The AC counts timers against its own clock, which can be wrong.** Measured on one unit
+(13 Oct 2026): every round trip fitted
+
+    stored = sent + realNow − deviceNow,   deviceNow = 1791590400 (10 Oct 00:00 UTC, not ticking)
+
+i.e. the AC fires `sent − deviceNow` seconds from now, and status reports the real Unix time
+it will fire. A plain Unix time for "in 1 hour" was therefore reported ~91 h out (1:23 AM
+showed as 8:23 PM, 3 days later). So:
+
+- **Sending:** `sent = target − (realNow − deviceNow)`.
+- **Reading:** status `actm` is already real Unix time; no conversion.
+- **Calibrating:** `deviceNow = sent + sentAt − stored` from any round trip. The clients start
+  with plain Unix time, read status ~5 s later, and if a slot landed more than 60 s off,
+  store the measured `deviceNow` and resend once. `ts` in status is real server time and says
+  nothing about the AC's clock.
+- Resending a slot's *reported* value unchanged moves it (it gets re-offset), so always
+  convert both slots from real time.
+
+Status also carries `acsp` (`"none"` when off), most likely sleep mode; its other values are unknown.
 
 Recurring weekly schedules from the MirAIe app are stored in MirAIe's cloud through an
 undocumented REST API and are not covered here. Sleep mode also has no known key yet.

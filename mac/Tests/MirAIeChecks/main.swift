@@ -67,34 +67,30 @@ check(json(ACCommand.eco(false).payload())["cnv"] == nil, "eco off leaves cnv al
 
 // Timers
 let now = Date(timeIntervalSince1970: 1_800_000_000)
-// In UTC the wire value equals the real epoch, so these check slot handling on its own.
-let utc = TimeZone(identifier: "UTC")!
-let ist = TimeZone(identifier: "Asia/Kolkata")!
+// Status reports timers as real Unix times.
 var timers = ACState()
-timers.merge(["actm": [1_800_003_600, -1]], timeZone: utc)
+timers.merge(["actm": [1_800_003_600, -1]])
 check(timers.offAt(now: now) == Date(timeIntervalSince1970: 1_800_003_600), "future off timer kept")
 check(timers.onAt(now: now) == nil, "-1 on timer is unset")
-timers.merge(["actm": [1_799_990_000, 1_800_007_200]], timeZone: utc)
+timers.merge(["actm": [1_799_990_000, 1_800_007_200]])
 check(timers.offAt(now: now) == nil, "past off timer counts as unset")
 check(timers.onAt(now: now) != nil, "on timer parsed")
-check(json(ACCommand.timers(off: 1_800_003_600, on: -1, timeZone: utc).payload())["actm"] as? [Int] == [1_800_003_600, -1],
-      "timer payload sends both slots")
 
-// Zone shift: the AC reads actm as local wall-clock time encoded as UTC.
-var istCal = Calendar(identifier: .gregorian)
-istCal.timeZone = ist
-var utcCal = Calendar(identifier: .gregorian)
-utcCal.timeZone = utc
-let oneAM = Int(istCal.date(from: DateComponents(year: 2026, month: 10, day: 13, hour: 1))!.timeIntervalSince1970)
-let wire = (json(ACCommand.timers(off: oneAM, on: -1, timeZone: ist).payload())["actm"] as? [Int])?.first ?? 0
-check(wire == oneAM + 19_800, "01:00 IST goes out shifted by +5:30")
-let wireDate = Date(timeIntervalSince1970: TimeInterval(wire))
-check(utcCal.component(.hour, from: wireDate) == 1 && utcCal.component(.minute, from: wireDate) == 0,
-      "wire value reads as 01:00 when taken as UTC")
-var fromAC = ACState()
-fromAC.merge(["actm": [oneAM + 19_800, -1]], timeZone: ist)
-check(fromAC.offTimer == oneAM, "status actm shifted back to the real time")
-check(ACCommand.toWireTime(-1, ist) == -1 && ACCommand.fromWireTime(-1, ist) == -1, "-1 never shifted")
+// Device clock: values measured on a real unit, whose clock sat at 1791590400 (10 Oct 00:00 UTC).
+let uncalibrated = TimerClock()
+check(json(ACCommand.timers(off: 1_800_003_600, on: -1, clock: uncalibrated).payload())["actm"] as? [Int] == [1_800_003_600, -1],
+      "uncalibrated clock sends plain Unix time, both slots")
+check(TimerClock.measure(sent: 1_791_597_600, sentAt: 1_791_918_142, stored: 1_791_925_342) == 1_791_590_400,
+      "measure recovers the device clock from a round trip")
+check(TimerClock.measure(sent: 1_791_921_603, sentAt: 1_791_918_003, stored: 1_792_249_209) == 1_791_590_397,
+      "first observed round trip gives the same clock within seconds")
+let acClock = TimerClock(deviceNow: 1_791_590_400)
+let realNow = 1_791_918_142
+let target = realNow + 7200
+let sentValue = acClock.toDevice(target, now: realNow)
+check(sentValue == 1_791_590_400 + 7200, "two hours from now goes out as device clock + 2h")
+check(sentValue + realNow - 1_791_590_400 == target, "the AC then reports the intended real time")
+check(acClock.toDevice(-1, now: realNow) == -1, "-1 is never converted")
 
 var cal = Calendar(identifier: .gregorian)
 cal.timeZone = TimeZone(identifier: "Asia/Kolkata")!

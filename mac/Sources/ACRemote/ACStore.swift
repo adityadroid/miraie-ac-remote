@@ -220,12 +220,50 @@ final class ACStore: ObservableObject {
 
     /// Pass nil to clear. The AC keeps both slots, so the other one is resent unchanged.
     func setOffTimer(_ date: Date?) {
-        state.offTimer = date.map { Int($0.timeIntervalSince1970) } ?? -1
-        send(.timers(off: state.offTimer, on: state.onAt() == nil ? -1 : state.onTimer))
+        setTimers(off: date.map { Int($0.timeIntervalSince1970) } ?? -1, on: state.onAt() == nil ? -1 : state.onTimer)
     }
 
     func setOnTimer(_ date: Date?) {
-        state.onTimer = date.map { Int($0.timeIntervalSince1970) } ?? -1
-        send(.timers(off: state.offAt() == nil ? -1 : state.offTimer, on: state.onTimer))
+        setTimers(off: state.offAt() == nil ? -1 : state.offTimer, on: date.map { Int($0.timeIntervalSince1970) } ?? -1)
+    }
+
+    private static let clockKey = "timerDeviceClock"
+    private var timerClock = TimerClock(deviceNow: UserDefaults.standard.object(forKey: clockKey) as? Int)
+    private var timerTask: Task<Void, Never>?
+
+    private func setTimers(off: Int, on: Int) {
+        state.offTimer = off
+        state.onTimer = on
+        timerTask?.cancel()
+        timerTask = Task { await sendTimers(off: off, on: on, retry: true) }
+    }
+
+    /// Sends real times converted to the AC's clock, then checks what the AC stored. If a slot
+    /// landed more than a minute off, the AC's clock has moved: recalibrate and send once more.
+    private func sendTimers(off: Int, on: Int, retry: Bool) async {
+        let sentAt = Int(Date().timeIntervalSince1970)
+        let command = ACCommand.timers(off: off, on: on, clock: timerClock)
+        let sent = command.fields["actm"] as? [Int] ?? [off, on]
+        send(command)
+
+        try? await Task.sleep(for: .seconds(5))
+        guard !Task.isCancelled, let device,
+              let status = try? await api.status(device, validSession()),
+              let stored = (status["actm"] as? [Any])?.compactMap({ Int("\($0)") }), stored.count == 2
+        else { return }
+
+        for (target, (wire, got)) in zip([off, on], zip(sent, stored)) where target > 0 && got > 0 {
+            let deviceNow = TimerClock.measure(sent: wire, sentAt: sentAt, stored: got)
+            if timerClock.deviceNow == nil || abs(got - target) > 60 {
+                timerClock.deviceNow = deviceNow
+                UserDefaults.standard.set(deviceNow, forKey: Self.clockKey)
+                if abs(got - target) > 60, retry {
+                    await sendTimers(off: off, on: on, retry: false)
+                    return
+                }
+            }
+            break
+        }
+        state.merge(status)
     }
 }

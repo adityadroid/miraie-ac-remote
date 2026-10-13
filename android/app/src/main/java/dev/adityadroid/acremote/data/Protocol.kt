@@ -146,26 +146,16 @@ object Protocol {
     fun convertible(level: Int): Map<String, Any> =
         linkedMapOf("cnv" to level, "acem" to "off", "acpm" to "off")
 
-    /** Both timer slots, always sent together; null becomes -1 (unset). Takes real epoch seconds. */
-    fun timers(offAt: Long?, onAt: Long?, zone: ZoneId = ZoneId.systemDefault()): Map<String, Any> =
-        mapOf("actm" to JSONArray().put(offAt?.let { toWireTime(it, zone) } ?: -1L).put(onAt?.let { toWireTime(it, zone) } ?: -1L))
-
     /**
-     * The AC reads `actm` as local wall-clock time written as if it were UTC, not as a true
-     * Unix time: sending the real epoch for an 01:00 IST timer showed up around 19:30–20:00,
-     * i.e. the UTC wall clock. So shift by the zone offset on the way out and back on the way in.
+     * Both timer slots, always sent together; null becomes -1 (unset). Takes real epoch seconds
+     * and converts them to the AC's own clock ([deviceNow], see [TimerClock]).
      */
-    fun toWireTime(epochSec: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
-        epochSec + zone.rules.getOffset(Instant.ofEpochSecond(epochSec)).totalSeconds
-
-    fun fromWireTime(wire: Long, zone: ZoneId = ZoneId.systemDefault()): Long =
-        wire - zone.rules.getOffset(java.time.LocalDateTime.ofEpochSecond(wire, 0, java.time.ZoneOffset.UTC)).totalSeconds
-
-    /** Sets (or with null clears) the off timer, keeping the current on timer. */
-    fun offTimer(state: AcState, at: Long?, zone: ZoneId = ZoneId.systemDefault()) = timers(at, state.onTimer, zone)
-
-    /** Sets (or with null clears) the on timer, keeping the current off timer. */
-    fun onTimer(state: AcState, at: Long?, zone: ZoneId = ZoneId.systemDefault()) = timers(state.offTimer, at, zone)
+    fun timers(offAt: Long?, onAt: Long?, deviceNow: Long?, now: Long = System.currentTimeMillis() / 1000): Map<String, Any> =
+        mapOf(
+            "actm" to JSONArray()
+                .put(offAt?.let { TimerClock.toDevice(it, deviceNow, now) } ?: -1L)
+                .put(onAt?.let { TimerClock.toDevice(it, deviceNow, now) } ?: -1L)
+        )
 
     // ---- time helpers
 
@@ -202,12 +192,7 @@ object Protocol {
      * Merges a (possibly partial) status / control JSON into [state]. Keys that are absent,
      * malformed or carry unknown enum values leave the current field untouched.
      */
-    fun merge(
-        state: AcState,
-        json: JSONObject,
-        nowSec: Long = System.currentTimeMillis() / 1000,
-        zone: ZoneId = ZoneId.systemDefault(),
-    ): AcState {
+    fun merge(state: AcState, json: JSONObject, nowSec: Long = System.currentTimeMillis() / 1000): AcState {
         var s = state
         fun has(k: String) = json.has(k) && !json.isNull(k)
         if (has("ps")) onOff(json.get("ps"))?.let { s = s.copy(power = it) }
@@ -224,17 +209,29 @@ object Protocol {
         if (has("onlineStatus")) onOff(json.get("onlineStatus"))?.let { s = s.copy(online = it) }
         if (has("cnv")) num(json.get("cnv"))?.toInt()?.let { s = s.copy(convertible = it.takeIf { v -> v != 1 && v >= 0 }) }
         if (has("actm")) json.optJSONArray("actm")?.takeIf { it.length() >= 2 }?.let { arr ->
-            fun slot(i: Int): Long? = num(arr.opt(i))?.toLong()?.takeIf { it > 0 }
-                ?.let { fromWireTime(it, zone) }?.takeIf { it > nowSec }
+            // Status reports each slot as the real epoch time it fires.
+            fun slot(i: Int): Long? = num(arr.opt(i))?.toLong()?.takeIf { it > nowSec }
             s = s.copy(offTimer = slot(0), onTimer = slot(1))
         }
         return s
     }
 
-    fun merge(
-        state: AcState,
-        settings: Map<String, Any>,
-        nowSec: Long = System.currentTimeMillis() / 1000,
-        zone: ZoneId = ZoneId.systemDefault(),
-    ): AcState = merge(state, JSONObject(settings), nowSec, zone)
+    fun merge(state: AcState, settings: Map<String, Any>, nowSec: Long = System.currentTimeMillis() / 1000): AcState =
+        merge(state, JSONObject(settings), nowSec)
+}
+
+/**
+ * The AC counts timers against its own clock, which can be far from real time (one unit sat at
+ * 10 Oct 00:00 UTC while it was really the 13th). It fires a timer `sent − deviceNow` seconds
+ * later, and MirAIe reports the slot back as the real time it will fire:
+ *     stored = sent + realNow − deviceNow
+ * So to fire at real time T, send `T − (realNow − deviceNow)`. Status values need no conversion.
+ */
+object TimerClock {
+    /** [deviceNow] null (uncalibrated) sends plain epoch time; the first round trip calibrates it. */
+    fun toDevice(realTime: Long, deviceNow: Long?, now: Long): Long =
+        if (deviceNow == null) realTime else realTime - (now - deviceNow)
+
+    /** The device clock implied by one round trip: [sent] at [sentAt], reported back as [stored]. */
+    fun measure(sent: Long, sentAt: Long, stored: Long): Long = sent + sentAt - stored
 }
